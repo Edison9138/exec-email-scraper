@@ -1,0 +1,4 @@
+stripe.com
+salesforce.com
+# Add more company domains below (one per line)
+# Lines starting with # are ignored
