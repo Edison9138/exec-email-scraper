@@ -5,10 +5,12 @@ A Python tool to find executive contact information from company websites for no
 ## Features
 
 - 🎯 Finds executive emails (CEO, CFO, CTO, etc.) from company domains
-- 📊 Exports results to CSV spreadsheet
+- 📊 Exports results to Excel spreadsheet with styled headers
 - 🔍 Filters for executive-level positions automatically
 - ✅ Includes confidence scores for each email
-- 🚀 Easy to use - just add company domains
+- 👥 Tracks BP member assignments
+- 📅 Timestamps each scraping session
+- 🚀 Easy to use - just add company domains to companies.txt
 
 ## Setup
 
@@ -33,6 +35,7 @@ cp .env.example .env
 ```
 
 Edit `.env` and add your API key:
+
 ```
 HUNTER_API_KEY=your_actual_api_key_here
 ```
@@ -60,7 +63,12 @@ python scraper.py
 
 ### Output
 
-Results are saved to `executive_emails.csv` with the following columns:
+Results are saved to `executive_emails.xlsx` (Excel format) with **two sheets**:
+
+#### Sheet 1: "Executive Emails"
+
+Contains successfully found executive contacts:
+
 - Domain
 - Company
 - Email
@@ -69,6 +77,27 @@ Results are saved to `executive_emails.csv` with the following columns:
 - Position
 - Department
 - Confidence Score
+- BP Member (team member assignment)
+- Parse Date (when the data was scraped)
+
+#### Sheet 2: "No Results"
+
+Tracks companies where no executive emails were found:
+
+- Domain
+- Company
+- BP Member (team member assignment)
+- Reason (why no emails were found)
+- Parse Date (when the attempt was made)
+
+The Excel file features:
+
+- **Two separate sheets** for organized tracking
+- **Styled headers** with blue background and white text
+- **Auto-sized columns** for easy reading
+- **Automatic duplicate detection** - won't add the same email or company twice
+- **Append mode** - new data is added to existing file without overwriting
+- **Smart filtering** - companies that get results won't be added to "No Results" sheet
 
 ### Example Output
 
@@ -82,7 +111,7 @@ Searching stripe.com...
 Searching salesforce.com...
   Found 3 executive email(s)
 
-✓ Exported 8 emails to executive_emails.csv
+✓ Added 8 new emails to executive_emails.xlsx (0 duplicates skipped)
 ```
 
 ## Advanced Usage
@@ -115,6 +144,7 @@ results = scraper.scrape_companies(domains, executives_only=False)
 This tool is designed for legitimate non-profit sponsorship outreach:
 
 ✅ **Do:**
+
 - Use for legitimate business outreach
 - Respect opt-out requests
 - Follow CAN-SPAM Act and GDPR guidelines
@@ -122,6 +152,7 @@ This tool is designed for legitimate non-profit sponsorship outreach:
 - Add unsubscribe options in your emails
 
 ❌ **Don't:**
+
 - Send unsolicited spam
 - Sell or share the collected data
 - Ignore opt-out requests
@@ -138,13 +169,16 @@ Tip: Be selective with your target companies to stay within limits.
 ## Troubleshooting
 
 **"HUNTER_API_KEY not found"**
+
 - Make sure you created a `.env` file with your API key
 
 **"No results found"**
+
 - The company may not be in Hunter.io's database
 - Try the company's main domain (e.g., 'company.com' not 'www.company.com')
 
 **Rate limit errors**
+
 - You've exceeded the free tier limit (25/month)
 - Wait until next month or upgrade your Hunter.io plan
 
