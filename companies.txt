@@ -1,4 +1,63 @@
-stripe.com
-salesforce.com
-# Add more company domains below (one per line)
+## Wesley
+# Week of Oct 6
+https://dangfoods.com/
+https://www.justins.com/
+https://www.annies.com/
+https://www.hormelfoods.com/
+https://www.conagrabrands.com/
+https://www.mondelezinternational.com/
+https://californiasnackfoods.com/
+https://bingbeverage.com/
+https://www.thfoods.com/
+https://tastybite.com/
+https://www.goodnes.com/
+
+
+## Clarisse
+# Week of Oct 6
+https://www.michelesgranola.com/
+https://nanajoes.com/
+https://www.poptarts.com/
+https://jambar.com/
+https://perfectsnacks.com/
+https://www.theyesbar.com/
+https://www.justins.com/
+https://puffworks.com/
+https://kibofoods.us/
+https://www.cultcrackers.com/
+https://revivalfoodco.com/
+
+
+## Lehan
+# Week of Oct 6
+https://gtslivingfoods.com/
+https://www.bubly.com/
+https://www.souvenir-coffee.com/
+https://delahcoffee.com/
+https://www.artichokepizza.com/
+https://www.craftmix.com/
+https://www.eboost.com/
+https://www.starbucks.com/
+https://www.lotusfoods.com/
+https://newmansown.com/
+https://primebites.com/
+https://acmebread.com/
+
+
+## Chenfei
+# Week of Oct 6
+https://eatmila.com
+https://nufsco.com
+https://www.ayo-foods.com
+https://wildwayoflife.com
+https://goodles.com
+https://www.poppyhandcraftedpopcorn.com
+https://incredifulls.com
+https://www.ryzesuperfoods.com
+https://remedyorganics.com
+https://liquiddeath.com
+
+
+# NOTES:
 # Lines starting with # are ignored
+# Put name after ##
