@@ -8,6 +8,7 @@ import requests
 import csv
 import os
 import re
+import time
 from datetime import datetime
 from urllib.parse import urlparse
 from dotenv import load_dotenv
@@ -19,6 +20,11 @@ load_dotenv()
 
 HUNTER_API_KEY = os.getenv("HUNTER_API_KEY")
 HUNTER_API_BASE = "https://api.hunter.io/v2"
+
+# Rate limiting configuration
+RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "2"))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+RETRY_DELAY = int(os.getenv("RETRY_DELAY", "5"))
 
 
 def extract_domain(url_or_domain: str) -> str:
@@ -97,6 +103,82 @@ class EmailScraper:
         self.api_key = api_key
         self.results = []
         self.no_results = []  # Track companies with no executive emails found
+        self.last_request_time = 0  # Track last API request time for rate limiting
+
+    def _wait_for_rate_limit(self):
+        """Implement rate limiting by ensuring minimum delay between requests"""
+        current_time = time.time()
+        time_since_last_request = current_time - self.last_request_time
+
+        if time_since_last_request < RATE_LIMIT_DELAY:
+            sleep_time = RATE_LIMIT_DELAY - time_since_last_request
+            print(f"  Rate limiting: waiting {sleep_time:.1f}s...")
+            time.sleep(sleep_time)
+
+        self.last_request_time = time.time()
+
+    def _make_api_request(self, url: str, params: dict, domain: str = "") -> Optional[Dict]:
+        """
+        Make API request with retry logic and exponential backoff
+
+        Args:
+            url: API endpoint URL
+            params: Request parameters
+            domain: Domain being queried (for error messages)
+
+        Returns:
+            Response JSON data or None if all retries failed
+        """
+        for attempt in range(MAX_RETRIES):
+            try:
+                # Enforce rate limiting before each request
+                self._wait_for_rate_limit()
+
+                response = requests.get(url, params=params, timeout=10)
+
+                # Handle rate limiting (429)
+                if response.status_code == 429:
+                    retry_delay = RETRY_DELAY * (2 ** attempt)  # Exponential backoff
+                    print(f"  Rate limit hit. Retrying in {retry_delay}s (attempt {attempt + 1}/{MAX_RETRIES})...")
+                    time.sleep(retry_delay)
+                    continue
+
+                # Handle other HTTP errors
+                response.raise_for_status()
+                return response.json()
+
+            except requests.exceptions.Timeout:
+                print(f"  Request timeout for {domain}. Retrying (attempt {attempt + 1}/{MAX_RETRIES})...")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY)
+                    continue
+                else:
+                    print(f"Error: Request timeout for {domain} after {MAX_RETRIES} attempts")
+                    return None
+
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 401:
+                    print(f"Error: Invalid API key. Check your HUNTER_API_KEY in .env file.")
+                    return None
+                elif e.response.status_code == 429:
+                    # Already handled above, but keeping for safety
+                    continue
+                else:
+                    print(f"Error: HTTP {e.response.status_code} for {domain}")
+                    return None
+
+            except requests.exceptions.RequestException as e:
+                print(f"  Network error for {domain}: {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY)
+                    continue
+                else:
+                    print(f"Error: Failed to fetch {domain} after {MAX_RETRIES} attempts")
+                    return None
+
+        # All retries exhausted
+        print(f"Error: Rate limit exceeded for {domain}. Please wait or upgrade your Hunter.io plan.")
+        return None
 
     def search_domain(self, domain: str, role: str = None) -> Dict:
         """
@@ -120,35 +202,17 @@ class EmailScraper:
         if role:
             params["role"] = role
 
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+        # Use the new rate-limited API request method
+        data = self._make_api_request(url, params, domain)
 
-            if data.get("data"):
-                return self._parse_results(data["data"], domain)
-            else:
-                print(f"No results found for {domain}")
-                return {"domain": domain, "emails": []}
-
-        except requests.exceptions.Timeout:
-            print(f"Error: Request timeout for {domain}")
-            return {"domain": domain, "emails": [], "error": "Timeout"}
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 429:
-                print(
-                    f"Error: Rate limit exceeded. Please wait or upgrade your Hunter.io plan."
-                )
-            elif e.response.status_code == 401:
-                print(
-                    f"Error: Invalid API key. Check your HUNTER_API_KEY in .env file."
-                )
-            else:
-                print(f"Error: HTTP {e.response.status_code} for {domain}")
-            return {"domain": domain, "emails": [], "error": str(e)}
-        except requests.exceptions.RequestException as e:
-            print(f"Error fetching data for {domain}: {e}")
-            return {"domain": domain, "emails": [], "error": str(e)}
+        if data and data.get("data"):
+            return self._parse_results(data["data"], domain)
+        elif data is None:
+            # Request failed after retries
+            return {"domain": domain, "emails": [], "error": "Request failed"}
+        else:
+            print(f"No results found for {domain}")
+            return {"domain": domain, "emails": []}
 
     def find_email(
         self, domain: str, first_name: str, last_name: str
@@ -169,25 +233,19 @@ class EmailScraper:
             "api_key": self.api_key,
         }
 
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+        # Use the new rate-limited API request method
+        data = self._make_api_request(url, params, domain)
 
-            if data.get("data") and data["data"].get("email"):
-                return {
-                    "email": data["data"]["email"],
-                    "first_name": data["data"].get("first_name"),
-                    "last_name": data["data"].get("last_name"),
-                    "position": data["data"].get("position"),
-                    "confidence": data["data"].get("score"),
-                    "domain": domain,
-                }
-            return None
-
-        except requests.exceptions.RequestException as e:
-            print(f"Error finding email for {first_name} {last_name} at {domain}: {e}")
-            return None
+        if data and data.get("data") and data["data"].get("email"):
+            return {
+                "email": data["data"]["email"],
+                "first_name": data["data"].get("first_name"),
+                "last_name": data["data"].get("last_name"),
+                "position": data["data"].get("position"),
+                "confidence": data["data"].get("score"),
+                "domain": domain,
+            }
+        return None
 
     def _parse_results(self, data: Dict, domain: str) -> Dict:
         """Parse Hunter.io API response"""
