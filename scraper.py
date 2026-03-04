@@ -4,6 +4,7 @@ Executive Email Scraper for Non-Profit Sponsorship Outreach
 Uses Hunter.io API to find executive emails from company domains
 """
 
+import json
 import requests
 import csv
 import os
@@ -12,7 +13,7 @@ import time
 from datetime import datetime
 from urllib.parse import urlparse
 from dotenv import load_dotenv
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 
@@ -21,10 +22,53 @@ load_dotenv()
 HUNTER_API_KEY = os.getenv("HUNTER_API_KEY")
 HUNTER_API_BASE = "https://api.hunter.io/v2"
 
+# Checkpoint: save progress every N companies so resume after rate limit is possible
+CHECKPOINT_FILE = os.getenv("CHECKPOINT_FILE", "scraper_checkpoint.json")
+CHECKPOINT_SAVE_EVERY = max(1, int(os.getenv("CHECKPOINT_SAVE_EVERY", "10")))
+
 # Rate limiting configuration
 RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "2"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 RETRY_DELAY = int(os.getenv("RETRY_DELAY", "5"))
+
+
+def load_checkpoint(path: str = CHECKPOINT_FILE) -> Tuple[List[Dict], List[Dict]]:
+    """Load results and no_results from checkpoint file. Returns ([], []) if missing or invalid."""
+    if not os.path.exists(path):
+        return [], []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return [], []
+        results = data.get("results", [])
+        no_results = data.get("no_results", [])
+        if not isinstance(results, list):
+            results = []
+        if not isinstance(no_results, list):
+            no_results = []
+        # Ensure we only keep dict-like rows (safety for corrupted checkpoint)
+        results = [r for r in results if isinstance(r, dict)]
+        no_results = [r for r in no_results if isinstance(r, dict)]
+        return (results, no_results)
+    except (json.JSONDecodeError, IOError, OSError) as e:
+        print(f"Warning: Could not load checkpoint {path}: {e}")
+        return [], []
+
+
+def save_checkpoint(
+    results: List[Dict],
+    no_results: List[Dict],
+    path: str = CHECKPOINT_FILE,
+) -> None:
+    """Write results and no_results to checkpoint file (atomic write: temp then rename)."""
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"results": results, "no_results": no_results}, f, indent=2)
+        os.replace(tmp, path)  # atomic on POSIX and Windows
+    except IOError as e:
+        print(f"Warning: Could not save checkpoint {path}: {e}")
 
 
 def extract_domain(url_or_domain: str) -> str:
@@ -94,6 +138,59 @@ def clean_domains(domains: List[str]) -> List[str]:
             seen.add(clean_domain)
 
     return cleaned_domains
+
+
+def _result_rows_for_domain(
+    domain: str,
+    search_result: Dict,
+    bp_member: str,
+    parse_date: str,
+    executives_only: bool = True,
+) -> Tuple[List[Dict], Optional[Dict]]:
+    """
+    Convert one domain's search_domain() result into rows for results and no_results.
+    Returns (list of result row dicts, no_result row dict or None).
+    """
+    if search_result.get("emails"):
+        emails = search_result["emails"]
+        if executives_only:
+            emails = [e for e in emails if e.get("is_executive")]
+        if emails:
+            rows = []
+            for email in emails:
+                rows.append(
+                    {
+                        "Domain": domain,
+                        "Company": search_result.get("company", domain),
+                        "Email": email.get("email"),
+                        "First Name": email.get("first_name"),
+                        "Last Name": email.get("last_name"),
+                        "Position": email.get("position"),
+                        "Department": email.get("department"),
+                        "Confidence": email.get("confidence"),
+                        "BP Member": bp_member,
+                        "Parse Date": parse_date,
+                    }
+                )
+            return (rows, None)
+        # Emails found but none are executives
+        no_result = {
+            "Domain": domain,
+            "Company": search_result.get("company", domain),
+            "BP Member": bp_member,
+            "Reason": "No executive emails found",
+            "Parse Date": parse_date,
+        }
+        return ([], no_result)
+    # No emails found at all
+    no_result = {
+        "Domain": domain,
+        "Company": search_result.get("company", domain),
+        "BP Member": bp_member,
+        "Reason": search_result.get("error", "No emails in database"),
+        "Parse Date": parse_date,
+    }
+    return ([], no_result)
 
 
 class EmailScraper:
@@ -734,7 +831,7 @@ def load_domains(filename: str = "companies.txt") -> tuple[List[str], Dict[str, 
 
 
 def main():
-    """Main execution function"""
+    """Main execution function. Uses checkpoint JSON to resume after rate limits; Excel is written only when all domains are scraped."""
 
     # Check for API key
     if not HUNTER_API_KEY:
@@ -756,18 +853,83 @@ def main():
         print("ERROR: No domains found in companies.txt")
         return
 
+    # Load checkpoint so we can skip already-scraped domains and resume after rate limit
+    results, no_results = load_checkpoint()
+    scraped_domains = set()
+    for r in results:
+        if r.get("Domain"):
+            scraped_domains.add(r["Domain"])
+    for r in no_results:
+        if r.get("Domain"):
+            scraped_domains.add(r["Domain"])
+
+    domains_to_do = [d for d in domains if d not in scraped_domains]
+
     print("Executive Email Scraper for Non-Profit Sponsorship")
     print("=" * 50)
-    print(f"Searching {len(domains)} companies...\n")
+    if scraped_domains:
+        print(f"Resuming: {len(scraped_domains)} already scraped, {len(domains_to_do)} remaining.")
+    print(f"Searching {len(domains_to_do)} companies...\n")
 
-    # Scrape emails
-    results = scraper.scrape_companies(domains, domain_to_member, executives_only=True)
+    if not domains_to_do:
+        # All done from a previous run; just build Excel from checkpoint
+        scraper.results = results
+        scraper.no_results = no_results
+        if results or no_results:
+            excel_path = "executive_emails.xlsx"
+            if os.path.exists(excel_path):
+                os.remove(excel_path)
+            scraper.export_to_excel(excel_path)
+            print("All domains already scraped. Excel file updated from checkpoint.")
+        else:
+            print("All domains already scraped. No data in checkpoint; no Excel written.")
+        return
 
-    # Export to Excel
-    if results:
-        scraper.export_to_excel("executive_emails.xlsx")
+    parse_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for i, domain in enumerate(domains_to_do):
+        print(f"Searching {domain}...")
+        search_result = scraper.search_domain(domain)
+        bp_member = domain_to_member.get(domain, "Unknown")
+        new_rows, no_row = _result_rows_for_domain(
+            domain, search_result, bp_member, parse_date, executives_only=True
+        )
+        results.extend(new_rows)
+        if no_row:
+            no_results.append(no_row)
+
+        if new_rows:
+            print(f"  Found {len(new_rows)} executive email(s)")
+        else:
+            if no_row and no_row.get("Reason") == "No executive emails found":
+                print("  No executive emails found")
+            else:
+                print("  No emails found")
+
+        # Save checkpoint every N companies so progress survives rate limit / Ctrl+C
+        if (i + 1) % CHECKPOINT_SAVE_EVERY == 0:
+            save_checkpoint(results, no_results)
+            print(f"  Checkpoint saved ({len(results)} emails, {len(no_results)} no-results so far)")
+
+    # Final checkpoint save
+    save_checkpoint(results, no_results)
+
+    # Build Excel only when all domains have been scraped (from checkpoint as single source of truth)
+    scraped_now = {r["Domain"] for r in results if r.get("Domain")} | {
+        r["Domain"] for r in no_results if r.get("Domain")
+    }
+    if scraped_now >= set(domains):
+        scraper.results = results
+        scraper.no_results = no_results
+        excel_path = "executive_emails.xlsx"
+        if os.path.exists(excel_path):
+            os.remove(excel_path)  # Write fresh from checkpoint, not append
+        scraper.export_to_excel(excel_path)
+        print(f"\n✓ All {len(domains)} domains scraped. Excel saved to {excel_path}")
     else:
-        print("\nNo executive emails found")
+        print(
+            f"\nScraping paused (e.g. rate limit). Progress saved to {CHECKPOINT_FILE}. "
+            "Change API key if needed and run again to resume."
+        )
 
 
 if __name__ == "__main__":

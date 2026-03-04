@@ -83,11 +83,21 @@ Lines starting with `##` indicate team member names. The scraper automatically e
 
 ```bash
 python scraper.py
+# or with uv (no need to activate .venv):
+uv run scraper.py
 ```
+
+Progress is saved to a **checkpoint file** (`scraper_checkpoint.json`) every 10 companies. If you hit the Hunter.io rate limit (or stop with Ctrl+C):
+
+1. Update your API key in `.env` (e.g. add another Hunter.io key).
+2. Run the script again. It will **skip** domains already scraped and continue with the rest.
+3. When **all** domains have been scraped, the script writes `executive_emails.xlsx` once from the checkpoint.
+
+Optional env vars: `CHECKPOINT_FILE` (default `scraper_checkpoint.json`), `CHECKPOINT_SAVE_EVERY` (default `10`).
 
 ### Output
 
-Results are saved to `executive_emails.xlsx` with two sheets:
+When scraping is complete, results are written to `executive_emails.xlsx` with two sheets:
 
 **Sheet 1: "Executive Emails"**
 - Domain, Company, Email, First Name, Last Name
@@ -102,8 +112,8 @@ Results are saved to `executive_emails.xlsx` with two sheets:
 Features:
 - Styled headers with blue background
 - Auto-sized columns
-- Automatic duplicate detection
-- Append mode (new data added without overwriting)
+- Checkpoint/resume: progress in JSON; re-run to skip done domains and continue
+- Excel generated only when all companies are scraped
 - Smart filtering (companies with results won't appear in "No Results" sheet)
 
 ### Example Output
