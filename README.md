@@ -15,22 +15,31 @@ A Python tool to find executive contact information from company websites for no
 
 ## Setup
 
-### 1. Create Python Virtual Environment
+This project uses [uv](https://docs.astral.sh/uv/) for package management. Install uv if needed: <https://docs.astral.sh/uv/getting-started/installation/>.
+
+### 1. Create Virtual Environment and Install Dependencies
 
 ```bash
-# Create virtual environment
-python3 -m venv venv
+# Create virtual environment (uses Python from .python-version)
+uv venv
 
 # Activate virtual environment
 # On macOS/Linux:
-source venv/bin/activate
+source .venv/bin/activate
 # On Windows:
-# venv\Scripts\activate
+# .venv\Scripts\activate
+
+# Install dependencies
+uv pip install -r requirements.txt
 ```
 
-### 2. Install Dependencies
+### 2. (Optional) Using pip instead of uv
+
+If you prefer pip:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
 
@@ -156,7 +165,7 @@ Be selective with target companies to stay within limits.
 
 **Virtual environment issues**
 - Make sure to activate the virtual environment before running the script
-- Run `source venv/bin/activate` (macOS/Linux) or `venv\Scripts\activate` (Windows)
+- Run `source .venv/bin/activate` (macOS/Linux) or `.venv\Scripts\activate` (Windows)
 
 ## Legal & Ethical Use
 
