@@ -11,6 +11,7 @@ import os
 import re
 import time
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 from typing import List, Dict, Optional, Tuple
@@ -19,8 +20,34 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 load_dotenv()
 
-HUNTER_API_KEY = os.getenv("HUNTER_API_KEY")
 HUNTER_API_BASE = "https://api.hunter.io/v2"
+
+
+def load_hunter_api_keys(env_path: Optional[Path] = None) -> List[str]:
+    """Load all Hunter API keys from .env for automatic rotation on rate limit.
+    Supports both uncommented (HUNTER_API_KEY=...) and commented (# HUNTER_API_KEY=...) lines.
+    Only matches exact env-var style lines for commented keys (avoids false positives in freeform comments).
+    """
+    keys = []
+    path = env_path or Path(__file__).resolve().parent / ".env"
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if s.startswith("HUNTER_API_KEY="):
+                    key = s.split("=", 1)[1].strip()
+                    if key:
+                        keys.append(key)
+                elif re.match(r"^\s*#\s*HUNTER_API_KEY=(.+)$", s):
+                    # Only match lines that are purely a commented env var (not "Use HUNTER_API_KEY=..." etc.)
+                    key = s.split("HUNTER_API_KEY=", 1)[1].strip()
+                    if key:
+                        keys.append(key)
+    if not keys:
+        single = os.getenv("HUNTER_API_KEY")
+        if single:
+            keys.append(single)
+    return keys
 
 # Checkpoint: save progress every N companies so resume after rate limit is possible
 CHECKPOINT_FILE = os.getenv("CHECKPOINT_FILE", "scraper_checkpoint.json")
@@ -194,13 +221,22 @@ def _result_rows_for_domain(
 
 
 class EmailScraper:
-    def __init__(self, api_key: str):
-        if not api_key or not api_key.strip():
+    def __init__(self, api_keys: List[str]):
+        if not api_keys:
+            raise ValueError("At least one API key is required")
+        api_keys = [k.strip() for k in api_keys if k and k.strip()]
+        if not api_keys:
             raise ValueError("API key cannot be empty")
-        self.api_key = api_key
+        self.api_keys = api_keys
+        self.current_key_index = 0
         self.results = []
         self.no_results = []  # Track companies with no executive emails found
         self.last_request_time = 0  # Track last API request time for rate limiting
+
+    @property
+    def api_key(self) -> str:
+        """Current API key for backward compatibility."""
+        return self.api_keys[self.current_key_index]
 
     def _wait_for_rate_limit(self):
         """Implement rate limiting by ensuring minimum delay between requests"""
@@ -216,65 +252,81 @@ class EmailScraper:
 
     def _make_api_request(self, url: str, params: dict, domain: str = "") -> Optional[Dict]:
         """
-        Make API request with retry logic and exponential backoff
+        Make API request with retry logic, exponential backoff, and automatic key rotation on 429.
 
         Args:
             url: API endpoint URL
-            params: Request parameters
+            params: Request parameters (api_key is updated when rotating keys)
             domain: Domain being queried (for error messages)
 
         Returns:
-            Response JSON data or None if all retries failed
+            Response JSON data or None if all retries and keys failed
         """
-        for attempt in range(MAX_RETRIES):
-            try:
-                # Enforce rate limiting before each request
-                self._wait_for_rate_limit()
+        key_index = self.current_key_index
+        while key_index < len(self.api_keys):
+            params["api_key"] = self.api_keys[key_index]
 
-                response = requests.get(url, params=params, timeout=10)
+            for attempt in range(MAX_RETRIES):
+                try:
+                    # Enforce rate limiting before each request
+                    self._wait_for_rate_limit()
 
-                # Handle rate limiting (429)
-                if response.status_code == 429:
-                    retry_delay = RETRY_DELAY * (2 ** attempt)  # Exponential backoff
-                    print(f"  Rate limit hit. Retrying in {retry_delay}s (attempt {attempt + 1}/{MAX_RETRIES})...")
-                    time.sleep(retry_delay)
-                    continue
+                    response = requests.get(url, params=params, timeout=10)
 
-                # Handle other HTTP errors
-                response.raise_for_status()
-                return response.json()
+                    # Handle rate limiting (429 = usage limit, 403 = request rate limit per Hunter API docs)
+                    if response.status_code in (403, 429):
+                        retry_delay = RETRY_DELAY * (2 ** attempt)  # Exponential backoff
+                        print(f"  Rate limit hit (HTTP {response.status_code}). Retrying in {retry_delay}s (attempt {attempt + 1}/{MAX_RETRIES})...")
+                        time.sleep(retry_delay)
+                        continue
 
-            except requests.exceptions.Timeout:
-                print(f"  Request timeout for {domain}. Retrying (attempt {attempt + 1}/{MAX_RETRIES})...")
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(RETRY_DELAY)
-                    continue
-                else:
-                    print(f"Error: Request timeout for {domain} after {MAX_RETRIES} attempts")
-                    return None
+                    # Handle other HTTP errors
+                    response.raise_for_status()
+                    self.current_key_index = key_index
+                    try:
+                        return response.json()
+                    except json.JSONDecodeError as e:
+                        print(f"Error: Invalid JSON response for {domain}: {e}")
+                        return None
 
-            except requests.exceptions.HTTPError as e:
-                if e.response.status_code == 401:
-                    print(f"Error: Invalid API key. Check your HUNTER_API_KEY in .env file.")
-                    return None
-                elif e.response.status_code == 429:
-                    # Already handled above, but keeping for safety
-                    continue
-                else:
-                    print(f"Error: HTTP {e.response.status_code} for {domain}")
-                    return None
+                except requests.exceptions.Timeout:
+                    print(f"  Request timeout for {domain}. Retrying (attempt {attempt + 1}/{MAX_RETRIES})...")
+                    if attempt < MAX_RETRIES - 1:
+                        time.sleep(RETRY_DELAY)
+                        continue
+                    else:
+                        print(f"Error: Request timeout for {domain} after {MAX_RETRIES} attempts")
+                        return None
 
-            except requests.exceptions.RequestException as e:
-                print(f"  Network error for {domain}: {e}")
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(RETRY_DELAY)
-                    continue
-                else:
-                    print(f"Error: Failed to fetch {domain} after {MAX_RETRIES} attempts")
-                    return None
+                except requests.exceptions.HTTPError as e:
+                    if e.response.status_code == 401:
+                        print(f"Error: Invalid API key. Check your HUNTER_API_KEY in .env file.")
+                        return None
+                    elif e.response.status_code in (403, 429):
+                        # Already handled above, but keeping for safety
+                        continue
+                    else:
+                        print(f"Error: HTTP {e.response.status_code} for {domain}")
+                        return None
 
-        # All retries exhausted
-        print(f"Error: Rate limit exceeded for {domain}. Please wait or upgrade your Hunter.io plan.")
+                except requests.exceptions.RequestException as e:
+                    print(f"  Network error for {domain}: {e}")
+                    if attempt < MAX_RETRIES - 1:
+                        time.sleep(RETRY_DELAY)
+                        continue
+                    else:
+                        print(f"Error: Failed to fetch {domain} after {MAX_RETRIES} attempts")
+                        return None
+
+            # All retries exhausted for this key - try next key if available
+            if key_index < len(self.api_keys) - 1:
+                key_index += 1
+                self.current_key_index = key_index
+                print(f"  Rate limit hit. Switching to backup API key {key_index + 1} of {len(self.api_keys)}...")
+            else:
+                print(f"Error: Rate limit exceeded for {domain}. Please wait or upgrade your Hunter.io plan.")
+                return None
+
         return None
 
     def search_domain(self, domain: str, role: str = None) -> Dict:
@@ -540,18 +592,18 @@ class EmailScraper:
         try:
             if not file_exists or not headers_exist:
                 # Create new file with headers or rewrite existing file with headers
+                if file_exists and not headers_exist:
+                    # Backup existing content before overwriting
+                    try:
+                        with open(filename, "r", encoding="utf-8") as old:
+                            old_content = old.read()
+                        with open(filename + ".backup", "w", encoding="utf-8") as backup:
+                            backup.write(old_content)
+                    except IOError:
+                        pass  # Best-effort backup
                 with open(filename, "w", newline="", encoding="utf-8") as f:
                     writer = csv.DictWriter(f, fieldnames=expected_headers)
                     writer.writeheader()
-                    # If file existed but had no headers, we need to preserve existing data
-                    if file_exists and not headers_exist:
-                        # Read existing data and rewrite it
-                        with open(
-                            filename + ".backup", "w", newline="", encoding="utf-8"
-                        ) as backup:
-                            backup.write("")  # Create empty backup
-                        # For now, we'll just write the new results with headers
-                        # In a production system, you might want to parse and preserve old data
                     writer.writerows(new_results)
             else:
                 # Append to existing file with headers
@@ -833,15 +885,16 @@ def load_domains(filename: str = "companies.txt") -> tuple[List[str], Dict[str, 
 def main():
     """Main execution function. Uses checkpoint JSON to resume after rate limits; Excel is written only when all domains are scraped."""
 
-    # Check for API key
-    if not HUNTER_API_KEY:
+    # Load API keys (supports multiple keys for automatic rotation on rate limit)
+    api_keys = load_hunter_api_keys()
+    if not api_keys:
         print("ERROR: HUNTER_API_KEY not found!")
         print("Please create a .env file with your Hunter.io API key:")
         print("HUNTER_API_KEY=your_api_key_here")
         return
 
     try:
-        scraper = EmailScraper(HUNTER_API_KEY)
+        scraper = EmailScraper(api_keys)
     except ValueError as e:
         print(f"ERROR: {e}")
         return

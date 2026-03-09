@@ -57,11 +57,18 @@ Create a `.env` file:
 cp .env.example .env
 ```
 
-Edit `.env` and add your API key:
+Edit `.env` and add your API key(s). You can list multiple keys for automatic rotation when rate limited:
 
 ```
-HUNTER_API_KEY=your_actual_api_key_here
+# Primary key (active)
+HUNTER_API_KEY=your_primary_key_here
+
+# Backup keys (used automatically when rate limited - no need to manually switch)
+# HUNTER_API_KEY=backup_key_1
+# HUNTER_API_KEY=backup_key_2
 ```
+
+When the primary key hits Hunter.io's rate limit, the scraper automatically switches to the next key and continues. No manual editing required.
 
 ## Usage
 
@@ -87,11 +94,11 @@ python scraper.py
 uv run scraper.py
 ```
 
-Progress is saved to a **checkpoint file** (`scraper_checkpoint.json`) every 10 companies. If you hit the Hunter.io rate limit (or stop with Ctrl+C):
+Progress is saved to a **checkpoint file** (`scraper_checkpoint.json`) every 10 companies. If you hit the Hunter.io rate limit:
 
-1. Update your API key in `.env` (e.g. add another Hunter.io key).
-2. Run the script again. It will **skip** domains already scraped and continue with the rest.
-3. When **all** domains have been scraped, the script writes `executive_emails.xlsx` once from the checkpoint.
+- **Multiple keys in `.env`**: The scraper automatically switches to the next key and continues. No action needed.
+- **Single key or all keys exhausted**: Run the script again after adding more keys or waiting. It will **skip** domains already scraped and continue with the rest.
+- When **all** domains have been scraped, the script writes `executive_emails.xlsx` once from the checkpoint.
 
 Optional env vars: `CHECKPOINT_FILE` (default `scraper_checkpoint.json`), `CHECKPOINT_SAVE_EVERY` (default `10`).
 
@@ -139,7 +146,7 @@ You can use the `EmailScraper` class programmatically:
 ```python
 from scraper import EmailScraper
 
-scraper = EmailScraper(api_key='your_key')
+scraper = EmailScraper(api_keys=['your_key'])  # or multiple: api_keys=['key1', 'key2']
 
 # Find a specific person
 result = scraper.find_email('stripe.com', 'Patrick', 'Collison')
@@ -170,7 +177,8 @@ Be selective with target companies to stay within limits.
 - Try the main domain (e.g., `company.com` not `www.company.com`)
 
 **Rate limit errors**
-- You've exceeded the free tier limit (25/month)
+- Add multiple API keys to `.env` (commented or uncommented) for automatic rotation when one key is exhausted
+- You've exceeded the free tier limit (25/month per key)
 - Wait until next month or upgrade your Hunter.io plan
 
 **Virtual environment issues**
