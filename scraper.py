@@ -100,10 +100,12 @@ def save_checkpoint(
 
 def extract_domain(url_or_domain: str) -> str:
     """
-    Extract clean domain name from URL or return domain as-is
+    Extract clean domain name from URL, @domain format, or plain domain.
 
-    Args:
-        url_or_domain: URL (e.g., 'https://www.example.com/') or domain (e.g., 'example.com')
+    Supports:
+    - URLs: https://www.example.com/, http://example.com/path
+    - @domain: @example.com
+    - Plain domain: example.com
 
     Returns:
         Clean domain name (e.g., 'example.com')
@@ -116,6 +118,12 @@ def extract_domain(url_or_domain: str) -> str:
 
     if not url_or_domain:
         return ""
+
+    # Strip leading @ if present (e.g. @smuckers.com -> smuckers.com)
+    if url_or_domain.startswith("@"):
+        url_or_domain = url_or_domain[1:].strip()
+        if not url_or_domain:
+            return ""
 
     # If it's already a clean domain (no protocol), return as-is
     if not url_or_domain.startswith(("http://", "https://")):
@@ -882,6 +890,37 @@ def load_domains(filename: str = "companies.txt") -> tuple[List[str], Dict[str, 
     return cleaned_domains, domain_to_member
 
 
+def compute_domains_to_retry(
+    domains: List[str],
+    results: List[Dict],
+    no_results: List[Dict],
+) -> Tuple[List[str], List[Dict], int]:
+    """
+    Compute which domains need to be scraped (including retries for "Request failed").
+
+    Domains with "Request failed" in no_results are retried; other no_results are skipped.
+    Returns (domains_to_do, filtered_no_results, retry_count).
+    """
+    scraped_domains = set()
+    for r in results:
+        if r.get("Domain"):
+            scraped_domains.add(r["Domain"])
+    for r in no_results:
+        if r.get("Domain"):
+            if r.get("Reason") != "Request failed":
+                scraped_domains.add(r["Domain"])
+
+    domains_to_do = [d for d in domains if d not in scraped_domains]
+
+    retry_count = 0
+    if domains_to_do:
+        retry_domains = set(domains_to_do)
+        retry_count = sum(1 for r in no_results if r.get("Domain") in retry_domains)
+        no_results = [r for r in no_results if r.get("Domain") not in retry_domains]
+
+    return (domains_to_do, no_results, retry_count)
+
+
 def main():
     """Main execution function. Uses checkpoint JSON to resume after rate limits; Excel is written only when all domains are scraped."""
 
@@ -908,20 +947,17 @@ def main():
 
     # Load checkpoint so we can skip already-scraped domains and resume after rate limit
     results, no_results = load_checkpoint()
-    scraped_domains = set()
-    for r in results:
-        if r.get("Domain"):
-            scraped_domains.add(r["Domain"])
-    for r in no_results:
-        if r.get("Domain"):
-            scraped_domains.add(r["Domain"])
-
-    domains_to_do = [d for d in domains if d not in scraped_domains]
+    domains_to_do, no_results, retry_count = compute_domains_to_retry(
+        domains, results, no_results
+    )
+    scraped_domains = set(domains) - set(domains_to_do)
 
     print("Executive Email Scraper for Non-Profit Sponsorship")
     print("=" * 50)
     if scraped_domains:
         print(f"Resuming: {len(scraped_domains)} already scraped, {len(domains_to_do)} remaining.")
+    if retry_count:
+        print(f"(Retrying {retry_count} domain(s) that failed previously.)")
     print(f"Searching {len(domains_to_do)} companies...\n")
 
     if not domains_to_do:

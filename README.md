@@ -26,14 +26,17 @@ HUNTER_API_KEY=backup_key_2
 
 You can list multiple keys. When one hits the rate limit, the scraper switches to the next automatically.
 
-6. **Add companies** – Edit `companies.txt` and add company URLs, one per line. Use `## Name` to group by team member:
+6. **Add companies** – Edit `companies.txt` and add company domains, one per line. Use `## Name` to group by team member. You can use `@domain.com`, full URLs, or plain `domain.com`—all work.
 
 ```
 ## Wesley
-https://dangfoods.com/
+@dangfoods.com
+https://www.michelesgranola.com/
+stripe.com
 
 ## Clarisse
-https://www.michelesgranola.com/
+@hormel.com
+https://tillamook.com/
 ```
 
 7. **Run the scraper**:
